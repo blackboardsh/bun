@@ -1,0 +1,304 @@
+name: Build Bun (Electrobun)
+
+# Builds Bun for Electrobun using standard oven-sh/WebKit (auto-downloaded by cmake).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  LLVM_VERSION: "21"
+
+jobs:
+  linux:
+    name: Linux (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x64
+            label: bun-linux-x64
+          # ARM disabled for now — OOM on standard GitHub runners
+          # - runner: ubuntu-24.04-arm
+          #   arch: arm64
+          #   label: bun-linux-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go \
+            /opt/hostedtoolcache/Python /opt/hostedtoolcache/Ruby \
+            /usr/local/share/powershell /usr/local/share/chromium \
+            /usr/local/share/swift /usr/share/miniconda /usr/share/az_*
+          echo "Disk space after cleanup:"
+          df -h /
+
+      - name: Install LLVM
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- ${{ env.LLVM_VERSION }} all
+          echo "/usr/lib/llvm-${{ env.LLVM_VERSION }}/bin" >> $GITHUB_PATH
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build \
+            gcc-13 g++-13 libgcc-13-dev libstdc++-13-dev \
+            libatomic1 libc6-dev \
+            pkg-config
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          source "$HOME/.cargo/env"
+          rustup toolchain install nightly-2025-12-10
+          rustup default nightly-2025-12-10
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Generate source lists
+        run: bun scripts/glob-sources.mjs
+
+      - name: Add swap space
+        run: |
+          sudo swapoff /swapfile 2>/dev/null || true
+          sudo rm -f /swapfile
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "Memory + swap:"
+          free -h
+
+      - name: Configure and Build Bun
+        env:
+          CC: clang-${{ env.LLVM_VERSION }}
+          CXX: clang++-${{ env.LLVM_VERSION }}
+          AR: llvm-ar-${{ env.LLVM_VERSION }}
+          RANLIB: llvm-ranlib-${{ env.LLVM_VERSION }}
+        run: |
+          cmake -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_CXX_FLAGS=-Wno-undefined-var-template" \
+            -B build/release
+          cmake --build build/release --target bun -- -j2
+
+      - name: Report binary size
+        run: |
+          echo "### ${{ matrix.label }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -lh build/release/bun >> $GITHUB_STEP_SUMMARY
+          file build/release/bun >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Smoke test
+        run: |
+          ./build/release/bun -e "console.log('hello')"
+          ./build/release/bun -e "console.log(new Intl.NumberFormat('de-DE').format(1234.56))"
+          ./build/release/bun -e "console.log('café'.normalize('NFD'))"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: build/release/bun
+
+  macos:
+    name: macOS (arm64)
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+        run: |
+          brew install cmake ninja icu4c rust llvm -f --overwrite
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Generate source lists
+        run: bun scripts/glob-sources.mjs
+
+      - name: Patch lazy_split_view.h libc++ bug
+        run: |
+          # libc++ 21 has a bug: __outer_iterator and __inner_iterator are forward-declared
+          # private, then public methods follow, then a private: section contains the
+          # definitions. The access levels must match. Fix: remove the private: before the
+          # definitions so they stay in the public section (matching would also work but
+          # this is the minimal change).
+          HEADER="/opt/homebrew/opt/llvm/include/c++/v1/__ranges/lazy_split_view.h"
+          if [ -f "$HEADER" ]; then
+            sudo python3 -c "
+          import sys, re
+          path = sys.argv[1]
+          with open(path) as f:
+              content = f.read()
+          # 1. Move public: to before the forward declarations (so they're public)
+          old1 = r'(  template <bool>\n  struct __outer_iterator;\n  template <bool>\n  struct __inner_iterator;\n)\npublic:'
+          new1 = r'public:\n\1'
+          result = re.sub(old1, new1, content)
+          # 2. Remove the private: before __outer_iterator_category (so definitions stay public)
+          old2 = r'\nprivate:\n  template <class>\n  struct __outer_iterator_category'
+          new2 = r'\n  template <class>\n  struct __outer_iterator_category'
+          result = re.sub(old2, new2, result)
+          if result == content:
+              print('WARNING: No patterns matched')
+              sys.exit(1)
+          with open(path, 'w') as f:
+              f.write(result)
+          print('Patched successfully')
+          " "$HEADER"
+          else
+            echo "Header not found at $HEADER, searching..."
+            find /opt/homebrew/opt/llvm -name lazy_split_view.h 2>/dev/null
+          fi
+
+      - name: Configure and Build Bun
+        run: |
+          echo "Homebrew LLVM: $(/opt/homebrew/opt/llvm/bin/clang --version | head -1)"
+          cmake -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_VERSION=ignore \
+            -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang \
+            -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
+            "-DCMAKE_CXX_FLAGS=-Wno-undefined-var-template" \
+            -B build/release
+          cmake --build build/release --target bun
+
+      - name: Report binary size
+        run: |
+          echo "### bun-darwin-arm64" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -lh build/release/bun >> $GITHUB_STEP_SUMMARY
+          file build/release/bun >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Smoke test
+        run: |
+          ./build/release/bun -e "console.log('hello')"
+          ./build/release/bun -e "console.log(new Intl.NumberFormat('de-DE').format(1234.56))"
+          ./build/release/bun -e "console.log('café'.normalize('NFD'))"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bun-darwin-arm64
+          path: build/release/bun
+
+  windows:
+    name: Windows (x64)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Scoop, LLVM, Ninja
+        run: |
+          Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+          Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+          Join-Path (Resolve-Path ~).Path "scoop\shims" >> $Env:GITHUB_PATH
+          "C:\Program Files\7-Zip" >> $Env:GITHUB_PATH
+          scoop config use_external_7zip true
+          scoop install ninja llvm@21.1.8 cmake
+          Join-Path (Resolve-Path ~).Path "scoop\apps\llvm\current\bin" >> $Env:GITHUB_PATH
+
+      - name: Install Rust
+        run: |
+          Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+          .\rustup-init.exe -y --default-toolchain stable
+          "$env:USERPROFILE\.cargo\bin" >> $Env:GITHUB_PATH
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Generate source lists
+        run: bun scripts/glob-sources.mjs
+
+      - name: Pre-install dependencies
+        shell: pwsh
+        run: |
+          # Run bun install with copyfile linking to avoid ENOENT hardlink
+          # failures with native packages (lightningcss) on Windows CI runners.
+          # This ensures codegen scripts don't trigger a failing auto-install.
+          bun install --backend=copyfile
+
+      - name: Configure and Build Bun
+        shell: pwsh
+        run: |
+          $cmakeArgs = @(
+            "-GNinja"
+            "-DCMAKE_BUILD_TYPE=Release"
+            "-DCMAKE_CXX_FLAGS=-Wno-undefined-var-template"
+          )
+
+          cmake @cmakeArgs -B build/release
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+
+          cmake --build build/release --target bun
+          if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
+
+      - name: Report binary size
+        shell: pwsh
+        run: |
+          $bun = Get-Item build/release/bun.exe
+          $sizeMB = [math]::Round($bun.Length / 1MB, 1)
+          "### bun-windows-x64" >> $env:GITHUB_STEP_SUMMARY
+          '```' >> $env:GITHUB_STEP_SUMMARY
+          "bun.exe: ${sizeMB} MB" >> $env:GITHUB_STEP_SUMMARY
+          '```' >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          .\build\release\bun.exe -e "console.log('hello')"
+          .\build\release\bun.exe -e "console.log(new Intl.NumberFormat('de-DE').format(1234.56))"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bun-windows-x64
+          path: build/release/bun.exe
+
+  summary:
+    name: Size Summary
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Size comparison
+        run: |
+          echo "## Bun Binary Sizes (Electrobun)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Platform | Binary | Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|------|" >> $GITHUB_STEP_SUMMARY
+          for dir in artifacts/bun-*/; do
+            name=$(basename "$dir")
+            if [ -f "$dir/bun" ]; then
+              size=$(ls -lh "$dir/bun" | awk '{print $5}')
+              echo "| $name | bun | $size |" >> $GITHUB_STEP_SUMMARY
+            elif [ -f "$dir/bun.exe" ]; then
+              size=$(ls -lh "$dir/bun.exe" | awk '{print $5}')
+              echo "| $name | bun.exe | $size |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Build: Release (full Bun from bun-v1.3.9)" >> $GITHUB_STEP_SUMMARY
