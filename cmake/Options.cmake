@@ -142,6 +142,10 @@ endif()
 
 optionx(ENABLE_FUZZILLI BOOL "If fuzzilli support should be enabled" DEFAULT OFF)
 
+optionx(DISABLE_BUNDLER BOOL "Disable the bundler (bun build)" DEFAULT OFF)
+optionx(DISABLE_INSTALL BOOL "Disable the package manager (bun install)" DEFAULT OFF)
+optionx(DISABLE_TEST BOOL "Disable the test runner (bun test)" DEFAULT OFF)
+
 if(RELEASE AND LINUX AND CI AND NOT ENABLE_ASSERTIONS AND NOT ENABLE_ASAN)
   set(DEFAULT_LTO ON)
 else()

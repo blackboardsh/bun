@@ -88,6 +88,9 @@ jobs:
           cmake -GNinja \
             -DCMAKE_BUILD_TYPE=Release \
             "-DCMAKE_CXX_FLAGS=-Wno-undefined-var-template" \
+            -DDISABLE_BUNDLER=ON \
+            -DDISABLE_INSTALL=ON \
+            -DDISABLE_TEST=ON \
             -B build/release
           cmake --build build/release --target bun -- -j2
 
@@ -174,6 +177,9 @@ jobs:
             -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang \
             -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
             "-DCMAKE_CXX_FLAGS=-Wno-undefined-var-template" \
+            -DDISABLE_BUNDLER=ON \
+            -DDISABLE_INSTALL=ON \
+            -DDISABLE_TEST=ON \
             -B build/release
           cmake --build build/release --target bun
 
@@ -246,6 +252,9 @@ jobs:
             "-GNinja"
             "-DCMAKE_BUILD_TYPE=Release"
             "-DCMAKE_CXX_FLAGS=-Wno-undefined-var-template"
+            "-DDISABLE_BUNDLER=ON"
+            "-DDISABLE_INSTALL=ON"
+            "-DDISABLE_TEST=ON"
           )
 
           cmake @cmakeArgs -B build/release

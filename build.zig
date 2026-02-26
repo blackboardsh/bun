@@ -36,6 +36,9 @@ const BunBuildOptions = struct {
     enable_valgrind: bool,
     enable_tinycc: bool,
     use_mimalloc: bool,
+    disable_bundler: bool = false,
+    disable_install: bool = false,
+    disable_test: bool = false,
     tracy_callstack_depth: u16,
     reported_nodejs_version: Version,
     /// To make iterating on some '@embedFile's faster, we load them at runtime
@@ -87,6 +90,9 @@ const BunBuildOptions = struct {
         opts.addOption(bool, "enable_valgrind", this.enable_valgrind);
         opts.addOption(bool, "enable_tinycc", this.enable_tinycc);
         opts.addOption(bool, "use_mimalloc", this.use_mimalloc);
+        opts.addOption(bool, "disable_bundler", this.disable_bundler);
+        opts.addOption(bool, "disable_install", this.disable_install);
+        opts.addOption(bool, "disable_test", this.disable_test);
         opts.addOption([]const u8, "reported_nodejs_version", b.fmt("{f}", .{this.reported_nodejs_version}));
         opts.addOption(bool, "zig_self_hosted_backend", this.no_llvm);
         opts.addOption(bool, "override_no_export_cpp_apis", this.override_no_export_cpp_apis);
@@ -263,6 +269,9 @@ pub fn build(b: *Build) !void {
         .enable_valgrind = b.option(bool, "enable_valgrind", "Enable valgrind") orelse false,
         .enable_tinycc = b.option(bool, "enable_tinycc", "Enable TinyCC for FFI JIT compilation") orelse true,
         .use_mimalloc = b.option(bool, "use_mimalloc", "Use mimalloc as default allocator") orelse false,
+        .disable_bundler = b.option(bool, "disable_bundler", "Disable the bundler") orelse false,
+        .disable_install = b.option(bool, "disable_install", "Disable the package manager") orelse false,
+        .disable_test = b.option(bool, "disable_test", "Disable the test runner") orelse false,
         .llvm_codegen_threads = b.option(u32, "llvm_codegen_threads", "Number of threads to use for LLVM codegen") orelse 1,
     };
 

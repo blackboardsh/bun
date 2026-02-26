@@ -553,7 +553,7 @@ pub const Command = struct {
             // if we are bunx, but NOT a symlink to bun. when we run `<self> install`, we dont
             // want to recursively run bunx. so this check lets us peek back into bun install.
             if (args_iter.next()) |next| {
-                if (bun.strings.eqlComptime(next, "add") and bun.feature_flag.BUN_INTERNAL_BUNX_INSTALL.get()) {
+                if (!bun.Environment.disable_install and bun.strings.eqlComptime(next, "add") and bun.feature_flag.BUN_INTERNAL_BUNX_INSTALL.get()) {
                     return .AddCommand;
                 } else if (bun.strings.eqlComptime(next, "exec") and bun.feature_flag.BUN_INTERNAL_BUNX_INSTALL.get()) {
                     return .ExecCommand;
@@ -580,19 +580,19 @@ pub const Command = struct {
 
         return switch (RootCommandMatcher.match(first_arg_name)) {
             RootCommandMatcher.case("init") => .InitCommand,
-            RootCommandMatcher.case("build"), RootCommandMatcher.case("bun") => .BuildCommand,
+            RootCommandMatcher.case("build"), RootCommandMatcher.case("bun") => if (bun.Environment.disable_bundler) .AutoCommand else .BuildCommand,
             RootCommandMatcher.case("discord") => .DiscordCommand,
             RootCommandMatcher.case("upgrade") => .UpgradeCommand,
             RootCommandMatcher.case("completions") => .InstallCompletionsCommand,
             RootCommandMatcher.case("getcompletes") => .GetCompletionsCommand,
-            RootCommandMatcher.case("link") => .LinkCommand,
-            RootCommandMatcher.case("unlink") => .UnlinkCommand,
+            RootCommandMatcher.case("link") => if (bun.Environment.disable_install) .AutoCommand else .LinkCommand,
+            RootCommandMatcher.case("unlink") => if (bun.Environment.disable_install) .AutoCommand else .UnlinkCommand,
             RootCommandMatcher.case("x") => .BunxCommand,
             RootCommandMatcher.case("repl") => .ReplCommand,
 
             RootCommandMatcher.case("i"),
             RootCommandMatcher.case("install"),
-            => brk: {
+            => if (bun.Environment.disable_install) .AutoCommand else brk: {
                 for (args_iter.buf) |arg| {
                     if (arg.len > 0 and (strings.eqlComptime(arg, "-g") or strings.eqlComptime(arg, "--global"))) {
                         break :brk .AddCommand;
@@ -601,34 +601,34 @@ pub const Command = struct {
 
                 break :brk .InstallCommand;
             },
-            RootCommandMatcher.case("ci") => .InstallCommand,
+            RootCommandMatcher.case("ci") => if (bun.Environment.disable_install) .AutoCommand else .InstallCommand,
             RootCommandMatcher.case("c"), RootCommandMatcher.case("create") => .CreateCommand,
 
-            RootCommandMatcher.case("test") => .TestCommand,
+            RootCommandMatcher.case("test") => if (bun.Environment.disable_test) .AutoCommand else .TestCommand,
 
-            RootCommandMatcher.case("pm") => .PackageManagerCommand,
+            RootCommandMatcher.case("pm") => if (bun.Environment.disable_install) .AutoCommand else .PackageManagerCommand,
 
-            RootCommandMatcher.case("add"), RootCommandMatcher.case("a") => .AddCommand,
+            RootCommandMatcher.case("add"), RootCommandMatcher.case("a") => if (bun.Environment.disable_install) .AutoCommand else .AddCommand,
 
-            RootCommandMatcher.case("update") => .UpdateCommand,
-            RootCommandMatcher.case("patch") => .PatchCommand,
-            RootCommandMatcher.case("patch-commit") => .PatchCommitCommand,
+            RootCommandMatcher.case("update") => if (bun.Environment.disable_install) .AutoCommand else .UpdateCommand,
+            RootCommandMatcher.case("patch") => if (bun.Environment.disable_install) .AutoCommand else .PatchCommand,
+            RootCommandMatcher.case("patch-commit") => if (bun.Environment.disable_install) .AutoCommand else .PatchCommitCommand,
 
             RootCommandMatcher.case("r"),
             RootCommandMatcher.case("remove"),
             RootCommandMatcher.case("rm"),
             RootCommandMatcher.case("uninstall"),
-            => .RemoveCommand,
+            => if (bun.Environment.disable_install) .AutoCommand else .RemoveCommand,
 
             RootCommandMatcher.case("run") => .RunCommand,
             RootCommandMatcher.case("help") => .HelpCommand,
 
             RootCommandMatcher.case("exec") => .ExecCommand,
 
-            RootCommandMatcher.case("outdated") => .OutdatedCommand,
-            RootCommandMatcher.case("publish") => .PublishCommand,
-            RootCommandMatcher.case("audit") => .AuditCommand,
-            RootCommandMatcher.case("info") => .InfoCommand,
+            RootCommandMatcher.case("outdated") => if (bun.Environment.disable_install) .AutoCommand else .OutdatedCommand,
+            RootCommandMatcher.case("publish") => if (bun.Environment.disable_install) .AutoCommand else .PublishCommand,
+            RootCommandMatcher.case("audit") => if (bun.Environment.disable_install) .AutoCommand else .AuditCommand,
+            RootCommandMatcher.case("info") => if (bun.Environment.disable_install) .AutoCommand else .InfoCommand,
 
             // These are reserved for future use by Bun, so that someone
             // doing `bun deploy` to run a script doesn't accidentally break
@@ -640,10 +640,10 @@ pub const Command = struct {
             RootCommandMatcher.case("auth") => .ReservedCommand,
             RootCommandMatcher.case("login") => .ReservedCommand,
             RootCommandMatcher.case("logout") => .ReservedCommand,
-            RootCommandMatcher.case("whoami") => .PackageManagerCommand,
+            RootCommandMatcher.case("whoami") => if (bun.Environment.disable_install) .AutoCommand else .PackageManagerCommand,
             RootCommandMatcher.case("prune") => .ReservedCommand,
-            RootCommandMatcher.case("list") => .PackageManagerCommand,
-            RootCommandMatcher.case("why") => .WhyCommand,
+            RootCommandMatcher.case("list") => if (bun.Environment.disable_install) .AutoCommand else .PackageManagerCommand,
+            RootCommandMatcher.case("why") => if (bun.Environment.disable_install) .AutoCommand else .WhyCommand,
             RootCommandMatcher.case("fuzzilli") => if (bun.Environment.enable_fuzzilli)
                 .FuzzilliCommand
             else
@@ -767,10 +767,12 @@ pub const Command = struct {
             .ReservedCommand => return try ReservedCommand.exec(allocator),
             .InitCommand => return try InitCommand.exec(allocator, bun.argv[@min(2, bun.argv.len)..]),
             .InfoCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 try @"bun info"(allocator, log);
                 return;
             },
             .BuildCommand => {
+                if (bun.Environment.disable_bundler) unreachable;
                 const ctx = try Command.init(allocator, log, .BuildCommand);
                 try BuildCommand.exec(ctx, null);
             },
@@ -779,58 +781,68 @@ pub const Command = struct {
                 return;
             },
             .InstallCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .InstallCommand);
 
                 try InstallCommand.exec(ctx);
                 return;
             },
             .AddCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .AddCommand);
 
                 try AddCommand.exec(ctx);
                 return;
             },
             .UpdateCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .UpdateCommand);
 
                 try UpdateCommand.exec(ctx);
                 return;
             },
             .PatchCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .PatchCommand);
 
                 try PatchCommand.exec(ctx);
                 return;
             },
             .PatchCommitCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .PatchCommitCommand);
 
                 try PatchCommitCommand.exec(ctx);
                 return;
             },
             .OutdatedCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .OutdatedCommand);
 
                 try OutdatedCommand.exec(ctx);
                 return;
             },
             .UpdateInteractiveCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .UpdateInteractiveCommand);
 
                 try UpdateInteractiveCommand.exec(ctx);
                 return;
             },
             .PublishCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .PublishCommand);
 
                 try PublishCommand.exec(ctx);
                 return;
             },
             .AuditCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .AuditCommand);
                 try AuditCommand.exec(ctx);
             },
             .WhyCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .WhyCommand);
                 try WhyCommand.exec(ctx);
                 return;
@@ -851,30 +863,35 @@ pub const Command = struct {
                 return;
             },
             .RemoveCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .RemoveCommand);
 
                 try RemoveCommand.exec(ctx);
                 return;
             },
             .LinkCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .LinkCommand);
 
                 try LinkCommand.exec(ctx);
                 return;
             },
             .UnlinkCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .UnlinkCommand);
 
                 try UnlinkCommand.exec(ctx);
                 return;
             },
             .PackageManagerCommand => {
+                if (bun.Environment.disable_install) unreachable;
                 const ctx = try Command.init(allocator, log, .PackageManagerCommand);
 
                 try PackageManagerCommand.exec(ctx);
                 return;
             },
             .TestCommand => {
+                if (bun.Environment.disable_test) unreachable;
                 const ctx = try Command.init(allocator, log, .TestCommand);
 
                 try TestCommand.exec(ctx);
@@ -962,7 +979,7 @@ pub const Command = struct {
                     @as([]const u8, "");
                 // KEYWORDS: open file argv argv0
                 if (ctx.args.entry_points.len == 1) {
-                    if (strings.eqlComptime(extension, ".lockb")) {
+                    if (!bun.Environment.disable_install and strings.eqlComptime(extension, ".lockb")) {
                         return try @"bun ./bun.lockb"(ctx);
                     }
                 }

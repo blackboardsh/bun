@@ -53,6 +53,9 @@ pub const enable_logs = build_options.enable_logs;
 pub const enable_asan = build_options.enable_asan;
 pub const enable_fuzzilli = build_options.enable_fuzzilli;
 pub const enable_tinycc = build_options.enable_tinycc;
+pub const disable_bundler = build_options.disable_bundler;
+pub const disable_install = build_options.disable_install;
+pub const disable_test = build_options.disable_test;
 pub const codegen_path = build_options.codegen_path;
 pub const codegen_embed = build_options.codegen_embed;
 

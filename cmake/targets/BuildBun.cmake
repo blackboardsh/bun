@@ -720,6 +720,9 @@ register_command(
       -Denable_logs=$<IF:$<BOOL:${ENABLE_LOGS}>,true,false>
       -Denable_asan=$<IF:$<BOOL:${ENABLE_ZIG_ASAN}>,true,false>
       -Denable_fuzzilli=$<IF:$<BOOL:${ENABLE_FUZZILLI}>,true,false>
+      -Ddisable_bundler=$<IF:$<BOOL:${DISABLE_BUNDLER}>,true,false>
+      -Ddisable_install=$<IF:$<BOOL:${DISABLE_INSTALL}>,true,false>
+      -Ddisable_test=$<IF:$<BOOL:${DISABLE_TEST}>,true,false>
       -Denable_valgrind=$<IF:$<BOOL:${ENABLE_VALGRIND}>,true,false>
       -Denable_tinycc=$<IF:$<BOOL:${ENABLE_TINYCC}>,true,false>
       -Duse_mimalloc=$<IF:$<BOOL:${USE_MIMALLOC_AS_DEFAULT_ALLOCATOR}>,true,false>
