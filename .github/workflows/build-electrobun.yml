@@ -78,7 +78,7 @@ jobs:
           echo "Memory + swap:"
           free -h
 
-      - name: Configure and Build Bun
+      - name: Configure Bun (downloads WebKit)
         env:
           CC: clang-${{ env.LLVM_VERSION }}
           CXX: clang++-${{ env.LLVM_VERSION }}
@@ -91,7 +91,77 @@ jobs:
             -DDISABLE_BUNDLER=ON \
             -DDISABLE_INSTALL=ON \
             -DDISABLE_TEST=ON \
+            -DUSE_EXTERNAL_ICU_DATA=ON \
             -B build/release
+
+      - name: Detect ICU version, download data, build stubdata
+        env:
+          CC: clang-${{ env.LLVM_VERSION }}
+          AR: llvm-ar-${{ env.LLVM_VERSION }}
+        run: |
+          # Detect ICU major version from the WebKit libicudata.a symbol
+          WEBKIT_LIB=$(find build/release -name "libicudata.a" -exec dirname {} \; | head -1)
+          ICU_MAJOR=$(nm "$WEBKIT_LIB/libicudata.a" 2>/dev/null | grep -oP 'icudt\K\d+' | head -1)
+          if [ -z "$ICU_MAJOR" ]; then
+            # Fallback: check libicuuc.a for the version
+            ICU_MAJOR=$(strings "$WEBKIT_LIB/libicuuc.a" | grep -oP 'icudt\K\d+' | head -1)
+          fi
+          echo "Detected ICU major version: $ICU_MAJOR"
+          echo "ICU_MAJOR=$ICU_MAJOR" >> $GITHUB_ENV
+
+          ICU_DATA_FILE="icudt${ICU_MAJOR}l.dat"
+          echo "ICU_DATA_FILE=$ICU_DATA_FILE" >> $GITHUB_ENV
+
+          # Map major version to release tag (e.g., 75 -> 75-1, 73 -> 73-2)
+          # Try common patch versions until one works
+          DATA_DOWNLOADED=0
+          for PATCH in 1 2 0; do
+            ICU_VER="${ICU_MAJOR}-${PATCH}"
+            ICU_VER_U="${ICU_MAJOR}_${PATCH}"
+            URL="https://github.com/unicode-org/icu/releases/download/release-${ICU_VER}/icu4c-${ICU_VER_U}-data-bin-l.zip"
+            echo "Trying ICU data from: $URL"
+            if curl -sfL "$URL" -o /tmp/icu-data.zip; then
+              echo "Found ICU release: ${ICU_VER}"
+              echo "ICU_VER=$ICU_VER" >> $GITHUB_ENV
+              echo "ICU_VER_U=$ICU_VER_U" >> $GITHUB_ENV
+              DATA_DOWNLOADED=1
+              break
+            fi
+          done
+          if [ "$DATA_DOWNLOADED" -eq 0 ]; then
+            echo "ERROR: Could not find ICU data download for major version $ICU_MAJOR"
+            exit 1
+          fi
+
+          mkdir -p build
+          unzip -q /tmp/icu-data.zip -d /tmp/icu-data
+          find /tmp/icu-data -name "$ICU_DATA_FILE" -exec cp {} build/ \;
+          ls -lh build/$ICU_DATA_FILE
+
+          # Download ICU source (only need stubdata.cpp + common headers)
+          curl -sL "https://github.com/unicode-org/icu/releases/download/release-${ICU_VER}/icu4c-${ICU_VER_U}-src.tgz" | tar xz -C /tmp
+
+          # Build stubdata library (single file, defines empty icudt*_dat symbol)
+          cd /tmp/icu/source
+          $CC -c -I common stubdata/stubdata.cpp -o /tmp/stubdata.o
+          $AR rcs /tmp/libicustubdata.a /tmp/stubdata.o
+
+          # Verify the stubdata exports the right symbol
+          nm /tmp/libicustubdata.a | grep "icudt${ICU_MAJOR}"
+          echo "Stubdata built successfully"
+
+      - name: Build Bun
+        env:
+          CC: clang-${{ env.LLVM_VERSION }}
+          CXX: clang++-${{ env.LLVM_VERSION }}
+          AR: llvm-ar-${{ env.LLVM_VERSION }}
+          RANLIB: llvm-ranlib-${{ env.LLVM_VERSION }}
+        run: |
+          # Copy stubdata lib into the WebKit lib path
+          WEBKIT_LIB=$(find build/release -name "libicudata.a" -exec dirname {} \; | head -1)
+          cp /tmp/libicustubdata.a "$WEBKIT_LIB/"
+          echo "Installed stubdata to: $WEBKIT_LIB"
+
           cmake --build build/release --target bun -- -j2
 
       - name: Report binary size
@@ -103,15 +173,28 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Smoke test
+        env:
+          ICU_DATA: ${{ github.workspace }}/build
         run: |
           ./build/release/bun -e "console.log('hello')"
           ./build/release/bun -e "console.log(new Intl.NumberFormat('de-DE').format(1234.56))"
           ./build/release/bun -e "console.log('café'.normalize('NFD'))"
 
+      - name: Verify external ICU data works
+        run: |
+          # Without ICU_DATA, Intl should fail (proves stubdata is in use)
+          if ICU_DATA="" ./build/release/bun -e "new Intl.NumberFormat('de-DE').format(1234.56)" 2>/dev/null; then
+            echo "WARNING: Intl works without ICU_DATA — stubdata may not be linked"
+          else
+            echo "OK: Intl fails without ICU_DATA (stubdata confirmed)"
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}
-          path: build/release/bun
+          path: |
+            build/release/bun
+            build/icudt*l.dat
 
   macos:
     name: macOS (arm64)
@@ -245,7 +328,7 @@ jobs:
           # This ensures codegen scripts don't trigger a failing auto-install.
           bun install --backend=copyfile
 
-      - name: Configure and Build Bun
+      - name: Configure Bun (downloads WebKit)
         shell: pwsh
         run: |
           $cmakeArgs = @(
@@ -255,10 +338,78 @@ jobs:
             "-DDISABLE_BUNDLER=ON"
             "-DDISABLE_INSTALL=ON"
             "-DDISABLE_TEST=ON"
+            "-DUSE_EXTERNAL_ICU_DATA=ON"
           )
-
           cmake @cmakeArgs -B build/release
           if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+
+      - name: Detect ICU version, download data, build stubdata
+        shell: pwsh
+        run: |
+          # Detect ICU major version from the WebKit sicudt.lib symbol
+          $sicudt = Get-ChildItem -Path "build\release" -Recurse -Filter "sicudt.lib" | Select-Object -First 1
+          if (-not $sicudt) { throw "Could not find sicudt.lib in WebKit" }
+          $dumpbin = dumpbin /symbols $sicudt.FullName 2>&1 | Select-String "icudt(\d+)_dat" | Select-Object -First 1
+          $icuMajor = $dumpbin.Matches[0].Groups[1].Value
+          Write-Host "Detected ICU major version: $icuMajor"
+          "ICU_MAJOR=$icuMajor" >> $env:GITHUB_ENV
+
+          $icuDataFile = "icudt${icuMajor}l.dat"
+          "ICU_DATA_FILE=$icuDataFile" >> $env:GITHUB_ENV
+
+          # Try common patch versions to find the right ICU release
+          $found = $false
+          foreach ($patch in @(1, 2, 0)) {
+            $icuVer = "${icuMajor}-${patch}"
+            $icuVerU = "${icuMajor}_${patch}"
+            $dataUrl = "https://github.com/unicode-org/icu/releases/download/release-${icuVer}/icu4c-${icuVerU}-data-bin-l.zip"
+            Write-Host "Trying: $dataUrl"
+            try {
+              Invoke-WebRequest -Uri $dataUrl -OutFile "$env:TEMP\icu-data.zip" -ErrorAction Stop
+              Write-Host "Found ICU release: $icuVer"
+              "ICU_VER=$icuVer" >> $env:GITHUB_ENV
+              "ICU_VER_U=$icuVerU" >> $env:GITHUB_ENV
+              $found = $true
+              break
+            } catch {
+              Write-Host "Not found, trying next..."
+            }
+          }
+          if (-not $found) { throw "Could not find ICU data for major version $icuMajor" }
+
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          Expand-Archive -Path "$env:TEMP\icu-data.zip" -DestinationPath "$env:TEMP\icu-data" -Force
+          $datFile = Get-ChildItem -Path "$env:TEMP\icu-data" -Recurse -Filter $icuDataFile | Select-Object -First 1
+          Copy-Item $datFile.FullName "build\$icuDataFile"
+          $sizeMB = [math]::Round((Get-Item "build\$icuDataFile").Length / 1MB, 1)
+          Write-Host "ICU data file: ${sizeMB} MB"
+
+          # Download ICU source (only need stubdata.cpp + common headers)
+          # $icuVer and $icuVerU are still set from the loop above
+          $srcUrl = "https://github.com/unicode-org/icu/releases/download/release-${icuVer}/icu4c-${icuVerU}-src.zip"
+          Invoke-WebRequest -Uri $srcUrl -OutFile "$env:TEMP\icu-src.zip"
+          Expand-Archive -Path "$env:TEMP\icu-src.zip" -DestinationPath "$env:TEMP\icu-src" -Force
+
+          # Build stubdata library
+          $stubSrc = Get-ChildItem -Path "$env:TEMP\icu-src" -Recurse -Filter "stubdata.cpp" | Select-Object -First 1
+          $icuCommon = Get-ChildItem -Path "$env:TEMP\icu-src" -Recurse -Directory -Filter "common" |
+            Where-Object { $_.FullName -match "icu[\\/]source[\\/]common$" } | Select-Object -First 1
+          cl /c /I"$($icuCommon.FullName)" "$($stubSrc.FullName)" /Fo"$env:TEMP\stubdata.obj"
+          if ($LASTEXITCODE -ne 0) { throw "cl stubdata failed" }
+          lib /OUT:"$env:TEMP\sicustubdt.lib" "$env:TEMP\stubdata.obj"
+          if ($LASTEXITCODE -ne 0) { throw "lib stubdata failed" }
+
+          # Verify symbol
+          dumpbin /symbols "$env:TEMP\sicustubdt.lib" | Select-String "icudt${icuMajor}"
+          Write-Host "Built stubdata: $((Get-Item $env:TEMP\sicustubdt.lib).Length) bytes"
+
+      - name: Build Bun
+        shell: pwsh
+        run: |
+          # Copy stubdata lib into the WebKit lib path
+          $sicudt = Get-ChildItem -Path "build\release" -Recurse -Filter "sicudt.lib" | Select-Object -First 1
+          Copy-Item "$env:TEMP\sicustubdt.lib" $sicudt.DirectoryName
+          Write-Host "Installed stubdata to: $($sicudt.DirectoryName)"
 
           cmake --build build/release --target bun
           if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
@@ -275,6 +426,8 @@ jobs:
 
       - name: Smoke test
         shell: pwsh
+        env:
+          ICU_DATA: ${{ github.workspace }}\build
         run: |
           .\build\release\bun.exe -e "console.log('hello')"
           .\build\release\bun.exe -e "console.log(new Intl.NumberFormat('de-DE').format(1234.56))"
@@ -282,7 +435,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bun-windows-x64
-          path: build/release/bun.exe
+          path: |
+            build/release/bun.exe
+            build/icudt*l.dat
 
   summary:
     name: Size Summary

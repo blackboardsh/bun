@@ -1269,7 +1269,13 @@ if(WIN32)
       ${WEBKIT_LIB_PATH}/WTF.lib
       ${WEBKIT_LIB_PATH}/JavaScriptCore.lib
       ${WEBKIT_LIB_PATH}/bmalloc.lib
-      ${WEBKIT_LIB_PATH}/sicudtd.lib
+    )
+    if(USE_EXTERNAL_ICU_DATA)
+      target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/sicustubdtd.lib)
+    else()
+      target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/sicudtd.lib)
+    endif()
+    target_link_libraries(${bun} PRIVATE
       ${WEBKIT_LIB_PATH}/sicuind.lib
       ${WEBKIT_LIB_PATH}/sicuucd.lib
     )
@@ -1278,7 +1284,13 @@ if(WIN32)
       ${WEBKIT_LIB_PATH}/WTF.lib
       ${WEBKIT_LIB_PATH}/JavaScriptCore.lib
       ${WEBKIT_LIB_PATH}/bmalloc.lib
-      ${WEBKIT_LIB_PATH}/sicudt.lib
+    )
+    if(USE_EXTERNAL_ICU_DATA)
+      target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/sicustubdt.lib)
+    else()
+      target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/sicudt.lib)
+    endif()
+    target_link_libraries(${bun} PRIVATE
       ${WEBKIT_LIB_PATH}/sicuin.lib
       ${WEBKIT_LIB_PATH}/sicuuc.lib
     )
@@ -1348,7 +1360,11 @@ if(LINUX)
     find_package(ICU REQUIRED COMPONENTS data i18n uc)
     target_link_libraries(${bun} PRIVATE ICU::data ICU::i18n ICU::uc)
   else()
-    target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicudata.a)
+    if(USE_EXTERNAL_ICU_DATA)
+      target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicustubdata.a)
+    else()
+      target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicudata.a)
+    endif()
     target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicui18n.a)
     target_link_libraries(${bun} PRIVATE ${WEBKIT_LIB_PATH}/libicuuc.a)
   endif()

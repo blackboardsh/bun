@@ -214,6 +214,8 @@ endif()
 
 optionx(USE_WEBKIT_ICU BOOL "Use the ICU libraries from WebKit" DEFAULT ${DEFAULT_WEBKIT_ICU})
 
+optionx(USE_EXTERNAL_ICU_DATA BOOL "Use external ICU data file instead of static linking" DEFAULT OFF)
+
 optionx(ERROR_LIMIT STRING "Maximum number of errors to show when compiling C++ code" DEFAULT "100")
 
 # TinyCC is used for FFI JIT compilation
