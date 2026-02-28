@@ -14,17 +14,16 @@ jobs:
   linux:
     name: Linux (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    timeout-minutes: 240
     strategy:
       matrix:
         include:
           - runner: ubuntu-24.04
             arch: x64
             label: bun-linux-x64
-          # ARM disabled for now — OOM on standard GitHub runners
-          # - runner: ubuntu-24.04-arm
-          #   arch: arm64
-          #   label: bun-linux-arm64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            label: bun-linux-arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -71,7 +70,8 @@ jobs:
         run: |
           sudo swapoff /swapfile 2>/dev/null || true
           sudo rm -f /swapfile
-          sudo fallocate -l 8G /swapfile
+          SWAP_SIZE=$([[ "${{ matrix.arch }}" == "arm64" ]] && echo "16G" || echo "8G")
+          sudo fallocate -l $SWAP_SIZE /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -162,7 +162,9 @@ jobs:
           cp /tmp/libicustubdata.a "$WEBKIT_LIB/"
           echo "Installed stubdata to: $WEBKIT_LIB"
 
-          cmake --build build/release --target bun -- -j2
+          # ARM64 runners have limited RAM — use -j1 to avoid OOM
+          JOBS=$([[ "${{ matrix.arch }}" == "arm64" ]] && echo 1 || echo 2)
+          cmake --build build/release --target bun -- -j$JOBS
 
       - name: Report binary size
         run: |
@@ -197,9 +199,20 @@ jobs:
             build/icudt*l.dat
 
   macos:
-    name: macOS (arm64)
-    runs-on: macos-14
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+            label: bun-darwin-arm64
+            llvm_prefix: /opt/homebrew/opt/llvm
+          - runner: macos-15-intel
+            arch: x64
+            label: bun-darwin-x64
+            llvm_prefix: /usr/local/opt/llvm
     steps:
       - uses: actions/checkout@v4
 
@@ -224,7 +237,7 @@ jobs:
           # definitions. The access levels must match. Fix: remove the private: before the
           # definitions so they stay in the public section (matching would also work but
           # this is the minimal change).
-          HEADER="/opt/homebrew/opt/llvm/include/c++/v1/__ranges/lazy_split_view.h"
+          HEADER="${{ matrix.llvm_prefix }}/include/c++/v1/__ranges/lazy_split_view.h"
           if [ -f "$HEADER" ]; then
             sudo python3 -c "
           import sys, re
@@ -248,17 +261,17 @@ jobs:
           " "$HEADER"
           else
             echo "Header not found at $HEADER, searching..."
-            find /opt/homebrew/opt/llvm -name lazy_split_view.h 2>/dev/null
+            find ${{ matrix.llvm_prefix }} -name lazy_split_view.h 2>/dev/null || echo "No lazy_split_view.h found (may not need patching)"
           fi
 
       - name: Configure and Build Bun
         run: |
-          echo "Homebrew LLVM: $(/opt/homebrew/opt/llvm/bin/clang --version | head -1)"
+          echo "Homebrew LLVM: $(${{ matrix.llvm_prefix }}/bin/clang --version | head -1)"
           cmake -GNinja \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_VERSION=ignore \
-            -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang \
-            -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ \
+            -DCMAKE_C_COMPILER=${{ matrix.llvm_prefix }}/bin/clang \
+            -DCMAKE_CXX_COMPILER=${{ matrix.llvm_prefix }}/bin/clang++ \
             "-DCMAKE_CXX_FLAGS=-Wno-undefined-var-template" \
             -DDISABLE_BUNDLER=ON \
             -DDISABLE_INSTALL=ON \
@@ -268,7 +281,7 @@ jobs:
 
       - name: Report binary size
         run: |
-          echo "### bun-darwin-arm64" >> $GITHUB_STEP_SUMMARY
+          echo "### ${{ matrix.label }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           ls -lh build/release/bun >> $GITHUB_STEP_SUMMARY
           file build/release/bun >> $GITHUB_STEP_SUMMARY
@@ -282,7 +295,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bun-darwin-arm64
+          name: ${{ matrix.label }}
           path: build/release/bun
 
   windows:
