@@ -238,6 +238,22 @@ using SourceOrigin = JSC::SourceOrigin;
 using JSObject = JSC::JSObject;
 using JSNonFinalObject = JSC::JSNonFinalObject;
 namespace JSCastingHelpers = JSC::JSCastingHelpers;
+
+extern "C" void Bun__GlobalObject__restrictEnv(JSC::JSGlobalObject* globalObject)
+{
+    auto* zigGlobal = jsCast<Zig::GlobalObject*>(globalObject);
+    auto& vm = JSC::getVM(globalObject);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto env = JSC::constructEmptyObject(zigGlobal, zigGlobal->objectPrototype(), 0);
+    zigGlobal->m_processEnvObject.set(vm, zigGlobal, env);
+
+    auto* process = zigGlobal->processObject();
+    if (!process->staticPropertiesReified()) {
+        process->reifyAllStaticProperties(zigGlobal);
+        RETURN_IF_EXCEPTION(scope, );
+    }
+    process->putDirect(vm, JSC::Identifier::fromString(vm, "env"_s), env, 0);
+}
 // #include <iostream>
 
 Structure* createMemoryFootprintStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject);

@@ -22,7 +22,54 @@ comptime {
     @export(&string_allocation_limit, .{ .name = "Bun__stringSyntheticAllocationLimit" });
     @export(&allowAddons, .{ .name = "Bun__VM__allowAddons" });
     @export(&allowRejectionHandledWarning, .{ .name = "Bun__VM__allowRejectionHandledWarning" });
+    @export(&workerPermissionsMask, .{ .name = "Bun__VM__workerPermissionsMask" });
 }
+
+pub const WorkerPermissions = struct {
+    read: bool = true,
+    write: bool = true,
+    env: bool = true,
+    run: bool = true,
+    ffi: bool = true,
+    addons: bool = true,
+    worker: bool = true,
+
+    pub const read_bit: u32 = 1 << 0;
+    pub const write_bit: u32 = 1 << 1;
+    pub const env_bit: u32 = 1 << 2;
+    pub const run_bit: u32 = 1 << 3;
+    pub const ffi_bit: u32 = 1 << 4;
+    pub const addons_bit: u32 = 1 << 5;
+    pub const worker_bit: u32 = 1 << 6;
+
+    pub fn all() WorkerPermissions {
+        return .{};
+    }
+
+    pub fn fromMask(mask: u32) WorkerPermissions {
+        return .{
+            .read = (mask & read_bit) != 0,
+            .write = (mask & write_bit) != 0,
+            .env = (mask & env_bit) != 0,
+            .run = (mask & run_bit) != 0,
+            .ffi = (mask & ffi_bit) != 0,
+            .addons = (mask & addons_bit) != 0,
+            .worker = (mask & worker_bit) != 0,
+        };
+    }
+
+    pub fn toMask(this: WorkerPermissions) u32 {
+        var mask: u32 = 0;
+        if (this.read) mask |= read_bit;
+        if (this.write) mask |= write_bit;
+        if (this.env) mask |= env_bit;
+        if (this.run) mask |= run_bit;
+        if (this.ffi) mask |= ffi_bit;
+        if (this.addons) mask |= addons_bit;
+        if (this.worker) mask |= worker_bit;
+        return mask;
+    }
+};
 
 global: *JSGlobalObject,
 allocator: std.mem.Allocator,
@@ -48,6 +95,7 @@ preload: []const []const u8 = &.{},
 unhandled_pending_rejection_to_capture: ?*JSValue = null,
 standalone_module_graph: ?*bun.StandaloneModuleGraph = null,
 smol: bool = false,
+worker_permissions: WorkerPermissions = WorkerPermissions.all(),
 dns_result_order: DNSResolver.Order = .verbatim,
 cpu_profiler_config: ?CPUProfilerConfig = null,
 heap_profiler_config: ?HeapProfilerConfig = null,
@@ -214,8 +262,89 @@ pub fn allowAddons(this: *VirtualMachine) callconv(.c) bool {
 pub fn allowRejectionHandledWarning(this: *VirtualMachine) callconv(.c) bool {
     return this.unhandledRejectionsMode() != .bun;
 }
+pub fn workerPermissionsMask(this: *VirtualMachine) callconv(.c) u32 {
+    return this.worker_permissions.toMask();
+}
 pub fn unhandledRejectionsMode(this: *VirtualMachine) api.UnhandledRejections {
     return this.transpiler.options.transform_options.unhandled_rejections orelse .bun;
+}
+
+pub fn canRead(this: *const VirtualMachine) bool {
+    return this.worker_permissions.read;
+}
+
+pub fn canWrite(this: *const VirtualMachine) bool {
+    return this.worker_permissions.write;
+}
+
+pub fn canUseFS(this: *const VirtualMachine) bool {
+    return this.canRead() or this.canWrite();
+}
+
+pub fn canUseEnv(this: *const VirtualMachine) bool {
+    return this.worker_permissions.env;
+}
+
+pub fn canRun(this: *const VirtualMachine) bool {
+    return this.worker_permissions.run;
+}
+
+pub fn canUseFFI(this: *const VirtualMachine) bool {
+    return this.worker_permissions.ffi;
+}
+
+pub fn canUseAddonsPermission(this: *const VirtualMachine) bool {
+    return this.worker_permissions.addons;
+}
+
+pub fn canCreateWorkers(this: *const VirtualMachine) bool {
+    return this.worker_permissions.worker;
+}
+
+pub fn requiredWorkerPermissionForBuiltin(this: *const VirtualMachine, specifier: []const u8) ?[]const u8 {
+    _ = this;
+    if (strings.eqlComptime(specifier, "fs") or
+        strings.eqlComptime(specifier, "fs/promises") or
+        strings.eqlComptime(specifier, "node:fs") or
+        strings.eqlComptime(specifier, "node:fs/promises") or
+        strings.eqlComptime(specifier, "bun:sqlite"))
+    {
+        return "read";
+    }
+
+    if (strings.eqlComptime(specifier, "child_process") or
+        strings.eqlComptime(specifier, "node:child_process"))
+    {
+        return "run";
+    }
+
+    if (strings.eqlComptime(specifier, "worker_threads") or
+        strings.eqlComptime(specifier, "node:worker_threads"))
+    {
+        return "worker";
+    }
+
+    if (strings.eqlComptime(specifier, "bun:ffi")) {
+        return "ffi";
+    }
+
+    return null;
+}
+
+pub fn isWorkerPermissionAllowed(this: *const VirtualMachine, permission: []const u8) bool {
+    if (strings.eqlComptime(permission, "read")) return this.canRead();
+    if (strings.eqlComptime(permission, "write")) return this.canWrite();
+    if (strings.eqlComptime(permission, "env")) return this.canUseEnv();
+    if (strings.eqlComptime(permission, "run")) return this.canRun();
+    if (strings.eqlComptime(permission, "ffi")) return this.canUseFFI();
+    if (strings.eqlComptime(permission, "addons")) return this.canUseAddonsPermission();
+    if (strings.eqlComptime(permission, "worker")) return this.canCreateWorkers();
+    return true;
+}
+
+pub fn throwPermissionDenied(this: *VirtualMachine, global: *JSGlobalObject, permission: []const u8, subject: []const u8) bun.JSError {
+    _ = this;
+    return global.throw("Access denied: worker permission '{s}' is required for {s}", .{ permission, subject });
 }
 
 pub fn initRequestBodyValue(this: *VirtualMachine, body: jsc.WebCore.Body.Value) !*Body.Value.HiveRef {
@@ -1107,6 +1236,7 @@ pub const Options = struct {
     graph: ?*bun.StandaloneModuleGraph = null,
     debugger: bun.cli.Command.Debugger = .{ .unspecified = {} },
     is_main_thread: bool = false,
+    worker_permissions: WorkerPermissions = WorkerPermissions.all(),
     /// Whether this VM should be destroyed after it exits, even if it is the main thread's VM.
     /// Worker VMs are always destroyed on exit, regardless of this setting. Setting this to
     /// true may expose bugs that would otherwise only occur using Workers.
@@ -1160,6 +1290,7 @@ pub fn init(opts: Options) !*VirtualMachine {
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
+        .worker_permissions = opts.worker_permissions,
         .debug_thread_id = if (Environment.allow_assert) std.Thread.getCurrentId(),
 
         .initial_script_execution_context_identifier = if (opts.is_main_thread) 1 else std.math.maxInt(i32),
@@ -1320,6 +1451,7 @@ pub fn initWorker(
         .origin_timestamp = getOriginTimestamp(),
         .ref_strings = jsc.RefString.Map.init(allocator),
         .ref_strings_mutex = .{},
+        .worker_permissions = opts.worker_permissions,
         .standalone_module_graph = worker.parent.standalone_module_graph,
         .worker = worker,
         .debug_thread_id = if (Environment.allow_assert) std.Thread.getCurrentId(),
@@ -1629,6 +1761,12 @@ fn _resolve(
         ret.path = try bun.default_allocator.dupe(u8, specifier);
         return;
     } else if (jsc.ModuleLoader.HardcodedModule.Alias.get(specifier, .bun, .{})) |result| {
+        if (jsc_vm.requiredWorkerPermissionForBuiltin(result.path)) |permission| {
+            if (!jsc_vm.isWorkerPermissionAllowed(permission)) {
+                jsc_vm.throwPermissionDenied(jsc_vm.global, permission, specifier) catch {};
+                return error.JSError;
+            }
+        }
         ret.result = null;
         ret.path = result.path;
         return;
@@ -1800,6 +1938,11 @@ pub fn resolveMaybeNeedsTrailingSlash(
     }
 
     if (jsc.ModuleLoader.HardcodedModule.Alias.get(specifier_utf8.slice(), .bun, .{})) |hardcoded| {
+        if (jsc_vm.requiredWorkerPermissionForBuiltin(hardcoded.path)) |permission| {
+            if (!jsc_vm.isWorkerPermissionAllowed(permission)) {
+                return jsc_vm.throwPermissionDenied(jsc_vm.global, permission, specifier_utf8.slice());
+            }
+        }
         res.* = ErrorableString.ok(
             if (is_user_require_resolve and hardcoded.node_builtin)
                 specifier

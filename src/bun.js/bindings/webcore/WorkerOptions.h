@@ -34,6 +34,7 @@ struct WorkerOptions {
     Vector<String> argv;
     // If nullopt, inherit execArgv from the parent thread
     std::optional<Vector<String>> execArgv;
+    uint32_t permissionMask { 0xffffffffu };
 };
 
 } // namespace WebCore

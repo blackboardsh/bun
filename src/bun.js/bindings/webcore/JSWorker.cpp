@@ -62,10 +62,13 @@
 #include <wtf/URL.h>
 #include "SerializedScriptValue.h"
 #include "BunProcess.h"
+#include "ZigGlobalObject.h"
 #include <JavaScriptCore/JSMap.h>
 
 namespace WebCore {
 using namespace JSC;
+
+extern "C" uint32_t Bun__VM__workerPermissionsMask(void* vm);
 
 // Functions
 
@@ -144,6 +147,12 @@ template<> JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES JSWorkerDOMConstructor::
     EnsureStillAliveScope argument1 = callFrame->argument(1);
 
     WorkerOptions options {};
+    options.permissionMask = Bun__VM__workerPermissionsMask(bunVM(lexicalGlobalObject));
+    constexpr uint32_t workerPermissionBit = 1u << 6;
+    if ((options.permissionMask & workerPermissionBit) == 0) {
+        throwVMError(lexicalGlobalObject, throwScope, "Access denied: worker permission 'worker' is required for Worker()"_s);
+        return encodedJSValue();
+    }
     JSValue nodeWorkerObject {};
     if (callFrame->argumentCount() == 3) {
         nodeWorkerObject = callFrame->argument(2);
@@ -206,6 +215,70 @@ template<> JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES JSWorkerDOMConstructor::
             }
         }
 
+        auto permissionsValue = optionsObject->getIfPropertyExists(lexicalGlobalObject, Identifier::fromString(vm, "permissions"_s));
+        RETURN_IF_EXCEPTION(throwScope, {});
+        if (permissionsValue && !permissionsValue.isUndefinedOrNull()) {
+            if (JSObject* permissionsObject = JSC::jsDynamicCast<JSC::JSObject*>(permissionsValue)) {
+                struct PermissionFlag {
+                    ASCIILiteral name;
+                    uint32_t bit;
+                };
+                static constexpr PermissionFlag flags[] = {
+                    { "read"_s, 1u << 0 },
+                    { "write"_s, 1u << 1 },
+                    { "env"_s, 1u << 2 },
+                    { "run"_s, 1u << 3 },
+                    { "ffi"_s, 1u << 4 },
+                    { "addons"_s, 1u << 5 },
+                    { "worker"_s, 1u << 6 },
+                };
+                static constexpr PermissionFlag legacyFlags[] = {
+                    { "fs"_s, (1u << 0) | (1u << 1) },
+                    { "childProcess"_s, 1u << 3 },
+                };
+
+                uint32_t requestedMask = options.permissionMask;
+                for (const auto& flag : flags) {
+                    auto value = permissionsObject->getIfPropertyExists(lexicalGlobalObject, Identifier::fromString(vm, flag.name));
+                    RETURN_IF_EXCEPTION(throwScope, {});
+                    if (!value)
+                        continue;
+
+                    if (!value.isBoolean()) {
+                        throwVMError(lexicalGlobalObject, throwScope, makeString("permissions."_s, flag.name, " must be a boolean"_s));
+                        return encodedJSValue();
+                    }
+
+                    if (value.toBoolean(lexicalGlobalObject))
+                        requestedMask |= flag.bit;
+                    else
+                        requestedMask &= ~flag.bit;
+                }
+
+                for (const auto& flag : legacyFlags) {
+                    auto value = permissionsObject->getIfPropertyExists(lexicalGlobalObject, Identifier::fromString(vm, flag.name));
+                    RETURN_IF_EXCEPTION(throwScope, {});
+                    if (!value)
+                        continue;
+
+                    if (!value.isBoolean()) {
+                        throwVMError(lexicalGlobalObject, throwScope, makeString("permissions."_s, flag.name, " must be a boolean"_s));
+                        return encodedJSValue();
+                    }
+
+                    if (value.toBoolean(lexicalGlobalObject))
+                        requestedMask |= flag.bit;
+                    else
+                        requestedMask &= ~flag.bit;
+                }
+
+                options.permissionMask &= requestedMask;
+            } else {
+                throwVMError(lexicalGlobalObject, throwScope, "permissions must be an object"_s);
+                return encodedJSValue();
+            }
+        }
+
         workerData = optionsObject->getIfPropertyExists(lexicalGlobalObject, Identifier::fromString(vm, "workerData"_s));
         RETURN_IF_EXCEPTION(throwScope, {});
         if (!workerData) {
@@ -231,6 +304,9 @@ template<> JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES JSWorkerDOMConstructor::
             }
         }
 
+        constexpr uint32_t envPermissionBit = 1u << 2;
+        const bool allowEnvInheritance = (options.permissionMask & envPermissionBit) != 0;
+
         auto envValue = optionsObject->getIfPropertyExists(lexicalGlobalObject, Identifier::fromString(vm, "env"_s));
         RETURN_IF_EXCEPTION(throwScope, {});
         // for now, we don't permit SHARE_ENV, because the behavior isn't implemented
@@ -241,7 +317,7 @@ template<> JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES JSWorkerDOMConstructor::
 
         if (envValue && envValue.isCell()) {
             envObject = jsDynamicCast<JSC::JSObject*>(envValue);
-        } else if (globalObject->m_processEnvObject.isInitialized()) {
+        } else if (allowEnvInheritance && globalObject->m_processEnvObject.isInitialized()) {
             envObject = globalObject->processEnvObject();
         }
 
@@ -266,6 +342,8 @@ template<> JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES JSWorkerDOMConstructor::
             }
 
             options.env.emplace(WTF::move(env));
+        } else if (!allowEnvInheritance) {
+            options.env.emplace();
         }
 
         // needed to match the coercion behavior of `String(value)`, which returns a descriptive

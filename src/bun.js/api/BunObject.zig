@@ -51,7 +51,7 @@ pub const BunObject = struct {
     pub const Archive = toJSLazyPropertyCallback(Bun.getArchiveConstructor);
     pub const CryptoHasher = toJSLazyPropertyCallback(Crypto.CryptoHasher.getter);
     pub const CSRF = toJSLazyPropertyCallback(Bun.getCSRFObject);
-    pub const FFI = toJSLazyPropertyCallback(Bun.FFIObject.getter);
+    pub const FFI = toJSLazyPropertyCallback(Bun.getFFIObject);
     pub const FileSystemRouter = toJSLazyPropertyCallback(Bun.getFileSystemRouter);
     pub const Glob = toJSLazyPropertyCallback(Bun.getGlobConstructor);
     pub const MD4 = toJSLazyPropertyCallback(Crypto.MD4.getter);
@@ -626,6 +626,10 @@ pub fn getArgv(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) jsc.JSValue {
 }
 
 pub fn openInEditor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
+    if (!globalThis.bunVM().canRun()) {
+        return globalThis.bunVM().throwPermissionDenied(globalThis, "run", "Bun.openInEditor()");
+    }
+
     var edit = &VirtualMachine.get().rareData().editor_context;
     const args = callframe.arguments_old(4);
     var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), args.slice());
@@ -1174,6 +1178,10 @@ pub fn allocUnsafe(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
 }
 
 pub fn mmapFile(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    if (!globalThis.bunVM().canRead()) {
+        return globalThis.bunVM().throwPermissionDenied(globalThis, "read", "Bun.mmap()");
+    }
+
     if (comptime Environment.isWindows) {
         return globalThis.throwTODO("mmapFile is not supported on Windows");
     }
@@ -1374,6 +1382,14 @@ pub fn getEmbeddedFiles(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) bun.J
     return array;
 }
 
+pub fn getFFIObject(globalThis: *jsc.JSGlobalObject, object: *jsc.JSObject) bun.JSError!jsc.JSValue {
+    if (!globalThis.bunVM().canUseFFI()) {
+        return globalThis.bunVM().throwPermissionDenied(globalThis, "ffi", "Bun.FFI");
+    }
+
+    return FFIObject.getter(globalThis, object);
+}
+
 pub fn getSemver(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) jsc.JSValue {
     return SemverObject.create(globalThis);
 }
@@ -1422,6 +1438,11 @@ const CSRFObject = struct {
 pub const EnvironmentVariables = struct {
     pub export fn Bun__getEnvCount(globalObject: *jsc.JSGlobalObject, ptr: *[*][]const u8) usize {
         const bunVM = globalObject.bunVM();
+        if (!bunVM.canUseEnv()) {
+            const empty = &[_][]const u8{};
+            ptr.* = @constCast(empty.ptr);
+            return 0;
+        }
         ptr.* = bunVM.transpiler.env.map.map.keys().ptr;
         return bunVM.transpiler.env.map.map.unmanaged.entries.len;
     }
@@ -1433,6 +1454,10 @@ pub const EnvironmentVariables = struct {
     }
 
     pub export fn Bun__getEnvValue(globalObject: *jsc.JSGlobalObject, name: *ZigString, value: *ZigString) bool {
+        if (!globalObject.bunVM().canUseEnv()) {
+            globalObject.bunVM().throwPermissionDenied(globalObject, "env", "Bun.env") catch {};
+            return false;
+        }
         if (getEnvValue(globalObject, name.*)) |val| {
             value.* = val;
             return true;
@@ -1443,6 +1468,9 @@ pub const EnvironmentVariables = struct {
 
     pub fn getEnvNames(globalObject: *jsc.JSGlobalObject, names: []ZigString) usize {
         var vm = globalObject.bunVM();
+        if (!vm.canUseEnv()) {
+            return 0;
+        }
         const keys = vm.transpiler.env.map.map.keys();
         const len = @min(names.len, keys.len);
         for (keys[0..len], names[0..len]) |key, *name| {
@@ -1453,6 +1481,10 @@ pub const EnvironmentVariables = struct {
 
     pub fn getEnvValue(globalObject: *jsc.JSGlobalObject, name: ZigString) ?ZigString {
         var vm = globalObject.bunVM();
+        if (!vm.canUseEnv()) {
+            vm.throwPermissionDenied(globalObject, "env", "Bun.env") catch {};
+            return null;
+        }
         var sliced = name.toSlice(vm.allocator);
         defer sliced.deinit();
         const value = vm.transpiler.env.get(sliced.slice()) orelse return null;

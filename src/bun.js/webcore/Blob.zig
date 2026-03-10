@@ -1531,6 +1531,10 @@ fn validateWritableBlob(globalThis: *jsc.JSGlobalObject, blob: *Blob) bun.JSErro
 
 /// `Bun.write(destination, input, options?)`
 pub fn writeFile(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    if (!globalThis.bunVM().canWrite()) {
+        return globalThis.bunVM().throwPermissionDenied(globalThis, "write", "Bun.write()");
+    }
+
     const arguments = callframe.arguments();
     var args = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments);
     defer args.deinit();
@@ -1893,6 +1897,10 @@ pub fn constructBunFile(
     globalObject: *jsc.JSGlobalObject,
     callframe: *jsc.CallFrame,
 ) bun.JSError!jsc.JSValue {
+    if (!globalObject.bunVM().canRead()) {
+        return globalObject.bunVM().throwPermissionDenied(globalObject, "read", "Bun.file()");
+    }
+
     var vm = globalObject.bunVM();
     const arguments = callframe.arguments_old(2).slice();
     var args = jsc.CallFrame.ArgumentsSlice.init(vm, arguments);

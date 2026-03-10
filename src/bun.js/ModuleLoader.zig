@@ -1165,6 +1165,15 @@ fn getHardcodedModule(jsc_vm: *VirtualMachine, specifier: bun.String, hardcoded:
 }
 
 pub fn fetchBuiltinModule(jsc_vm: *VirtualMachine, specifier: bun.String) !?ResolvedSource {
+    const specifier_utf8 = specifier.toUTF8(bun.default_allocator);
+    defer specifier_utf8.deinit();
+    if (jsc_vm.requiredWorkerPermissionForBuiltin(specifier_utf8.slice())) |permission| {
+        if (!jsc_vm.isWorkerPermissionAllowed(permission)) {
+            jsc_vm.throwPermissionDenied(jsc_vm.global, permission, specifier_utf8.slice()) catch {};
+            return error.JSError;
+        }
+    }
+
     if (HardcodedModule.map.getWithEql(specifier, bun.String.eqlComptime)) |hardcoded| {
         return getHardcodedModule(jsc_vm, specifier, hardcoded);
     }
@@ -1181,9 +1190,9 @@ pub fn fetchBuiltinModule(jsc_vm: *VirtualMachine, specifier: bun.String) !?Reso
             };
         }
     } else if (jsc_vm.standalone_module_graph) |graph| {
-        const specifier_utf8 = specifier.toUTF8(bun.default_allocator);
-        defer specifier_utf8.deinit();
-        if (graph.files.getPtr(specifier_utf8.slice())) |file| {
+        const graph_specifier_utf8 = specifier.toUTF8(bun.default_allocator);
+        defer graph_specifier_utf8.deinit();
+        if (graph.files.getPtr(graph_specifier_utf8.slice())) |file| {
             if (file.loader == .sqlite or file.loader == .sqlite_embedded) {
                 const code =
                     \\/* Generated code */

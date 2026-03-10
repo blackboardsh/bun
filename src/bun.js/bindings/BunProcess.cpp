@@ -371,6 +371,7 @@ extern "C" void Bun__unlink(const char*, size_t);
 
 extern "C" void CrashHandler__setDlOpenAction(const char* action);
 extern "C" bool Bun__VM__allowAddons(void* vm);
+extern "C" uint32_t Bun__VM__workerPermissionsMask(void* vm);
 
 JSC_DEFINE_HOST_FUNCTION(Process_functionDlopen, (JSC::JSGlobalObject * globalObject_, JSC::CallFrame* callFrame))
 {
@@ -2645,6 +2646,10 @@ static JSValue constructRevision(VM& vm, JSObject* processObject)
 static JSValue constructEnv(VM& vm, JSObject* processObject)
 {
     auto* globalObject = jsCast<Zig::GlobalObject*>(processObject->globalObject());
+    constexpr uint32_t envPermissionBit = 1u << 2;
+    if ((Bun__VM__workerPermissionsMask(globalObject->bunVM()) & envPermissionBit) == 0) {
+        return JSC::constructEmptyObject(globalObject, globalObject->objectPrototype(), 0);
+    }
     return globalObject->processEnvObject();
 }
 

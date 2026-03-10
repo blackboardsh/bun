@@ -158,6 +158,122 @@ describe("web worker", () => {
     };
   });
 
+  describe("permissions", () => {
+    test("allows node:fs when read permission is granted", async () => {
+      const worker = new Worker(new URL("worker-fixture-permissions.js", import.meta.url).href, {
+        permissions: {
+          read: true,
+        },
+      });
+      const result = await waitForWorkerResult(worker, "read");
+      expect(result).toEqual({
+        status: "allowed",
+        value: true,
+      });
+    });
+
+    test("blocks node:fs when read permission is denied", async () => {
+      const worker = new Worker(new URL("worker-fixture-permissions.js", import.meta.url).href, {
+        permissions: {
+          read: false,
+        },
+      });
+      const result = await waitForWorkerResult(worker, "read");
+      expect(result.status).toBe("blocked");
+      expect(result.error).toContain("worker permission 'read'");
+      expect(result.error).toContain("node:fs");
+    });
+
+    test("blocks process.env when env permission is denied", async () => {
+      const worker = new Worker(new URL("worker-fixture-permissions.js", import.meta.url).href, {
+        permissions: {
+          env: false,
+        },
+      });
+      const result = await waitForWorkerResult(worker, "env");
+      expect(result).toEqual({
+        status: "allowed",
+        value: {
+          direct: null,
+          directNested: null,
+          viaVar: null,
+          viaProc: null,
+          keys: [],
+        },
+      });
+    });
+
+    test("blocks Bun.spawnSync when run permission is denied", async () => {
+      const worker = new Worker(new URL("worker-fixture-permissions.js", import.meta.url).href, {
+        permissions: {
+          run: false,
+        },
+      });
+      const result = await waitForWorkerResult(worker, "run");
+      expect(result.status).toBe("blocked");
+      expect(result.error).toContain("worker permission 'run'");
+      expect(result.error).toContain("Bun.spawn()");
+    });
+
+    test("blocks bun:ffi when ffi permission is denied", async () => {
+      const worker = new Worker(new URL("worker-fixture-permissions.js", import.meta.url).href, {
+        permissions: {
+          ffi: false,
+        },
+      });
+      const result = await waitForWorkerResult(worker, "ffi");
+      expect(result.status).toBe("blocked");
+      expect(result.error).toContain("worker permission 'ffi'");
+      expect(result.error).toContain("bun:ffi");
+    });
+
+    test("does not allow nested workers to escalate read permission", async () => {
+      const worker = new Worker(new URL("worker-fixture-permissions.js", import.meta.url).href, {
+        permissions: {
+          read: false,
+        },
+      });
+      const result = await waitForWorkerResult(worker, "nested-read");
+      expect(result.status).toBe("blocked");
+      expect(result.error).toContain("worker permission 'read'");
+      expect(result.error).toContain("node:fs");
+    });
+
+    test("blocks nested workers when worker permission is denied", async () => {
+      const worker = new Worker(new URL("worker-fixture-permissions.js", import.meta.url).href, {
+        permissions: {
+          worker: false,
+        },
+      });
+      const result = await waitForWorkerResult(worker, "nested-worker");
+      expect(result.status).toBe("blocked");
+      expect(result.error).toContain("worker permission 'worker'");
+      expect(result.error).toContain("Worker()");
+    });
+
+    test("can boot a restricted background worker from another worker", async () => {
+      const worker = new Worker(new URL("worker-fixture-bunny-ears-runtime.js", import.meta.url).href, {
+        type: "module",
+      });
+      const result = await waitForWorkerResult(worker, "boot");
+      expect(result).toEqual({
+        ok: true,
+        actions: [
+          {
+            type: "action",
+            action: "set-tray",
+            payload: { title: "Forrager: Calm" },
+          },
+        ],
+        probe: {
+          read: true,
+          run: expect.stringContaining("worker permission 'run'"),
+          ffi: expect.stringContaining("worker permission 'ffi'"),
+        },
+      });
+    });
+  });
+
   test("argv / execArgv defaults", async () => {
     const worker = new Worker(new URL("worker-fixture-argv.js", import.meta.url).href, {});
     worker.postMessage("hello");

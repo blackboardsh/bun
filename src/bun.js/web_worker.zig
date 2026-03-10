@@ -39,6 +39,7 @@ execArgv: ?[]const WTFStringImpl,
 
 /// Used to distinguish between terminate() called by exit(), and terminate() called for other reasons
 exit_called: bool = false,
+permissions: jsc.VirtualMachine.WorkerPermissions = jsc.VirtualMachine.WorkerPermissions.all(),
 
 pub const Status = enum(u8) {
     start,
@@ -51,7 +52,6 @@ extern fn WebWorker__dispatchExit(?*jsc.JSGlobalObject, *anyopaque, i32) void;
 extern fn WebWorker__dispatchOnline(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
 extern fn WebWorker__fireEarlyMessages(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
 extern fn WebWorker__dispatchError(*jsc.JSGlobalObject, *anyopaque, bun.String, JSValue) void;
-
 export fn WebWorker__getParentWorker(vm: *jsc.VirtualMachine) ?*anyopaque {
     const worker = vm.worker orelse return null;
     return worker.cpp_worker;
@@ -203,6 +203,7 @@ pub fn create(
     execArgv_len: usize,
     preload_modules_ptr: ?[*]bun.String,
     preload_modules_len: usize,
+    permission_mask: u32,
 ) callconv(.c) ?*WebWorker {
     jsc.markBinding(@src());
     log("[{d}] WebWorker.create", .{this_context_id});
@@ -254,6 +255,7 @@ pub fn create(
         .argv = if (argv_ptr) |ptr| ptr[0..argv_len] else &.{},
         .execArgv = if (inherit_execArgv) null else (if (execArgv_ptr) |ptr| ptr[0..execArgv_len] else &.{}),
         .preloads = preloads.items,
+        .permissions = jsc.VirtualMachine.WorkerPermissions.fromMask(permission_mask),
     };
 
     worker.parent_poll_ref.ref(parent);
@@ -324,15 +326,43 @@ pub fn start(
         // this should go through most flags and update the options.
     }
 
+    if (!this.permissions.addons) {
+        transform_options.allow_addons = false;
+    }
+
     this.arena = bun.MimallocArena.init();
     var vm = try jsc.VirtualMachine.initWorker(this, .{
         .allocator = this.arena.?.allocator(),
         .args = transform_options,
         .store_fd = this.store_fd,
         .graph = this.parent.standalone_module_graph,
+        .worker_permissions = this.permissions,
     });
     vm.allocator = this.arena.?.allocator();
     vm.arena = &this.arena.?;
+
+    // Workers start from the runtime's Bun-target transform defaults, which
+    // enable env inlining. Restricted workers must opt out before the env
+    // loader runs, or direct `process.env.FOO` reads get compiled in.
+    if (!this.permissions.env) {
+        vm.transpiler.options.env.behavior = .disable;
+        vm.transpiler.options.env.prefix = "";
+        vm.transpiler.options.env.disable_default_env_files = true;
+    }
+
+    // Replace the worker env loader before configuring defines so direct
+    // `process.env.FOO` accesses resolve against the worker's env view.
+    const map = try vm.allocator.create(bun.DotEnv.Map);
+    if (this.permissions.env) {
+        map.* = try vm.transpiler.env.map.cloneWithAllocator(vm.allocator);
+    } else {
+        map.* = bun.DotEnv.Map.init(vm.allocator);
+    }
+
+    const loader = try vm.allocator.create(bun.DotEnv.Loader);
+    loader.* = bun.DotEnv.Loader.init(map, vm.allocator);
+
+    vm.transpiler.env = loader;
 
     var b = &vm.transpiler;
 
@@ -341,16 +371,6 @@ pub fn start(
         this.exitAndDeinit();
         return;
     };
-
-    // TODO: we may have to clone other parts of vm state. this will be more
-    // important when implementing vm.deinit()
-    const map = try vm.allocator.create(bun.DotEnv.Map);
-    map.* = try vm.transpiler.env.map.cloneWithAllocator(vm.allocator);
-
-    const loader = try vm.allocator.create(bun.DotEnv.Loader);
-    loader.* = bun.DotEnv.Loader.init(map, vm.allocator);
-
-    vm.transpiler.env = loader;
 
     vm.loadExtraEnvAndSourceCodePrinter();
     vm.is_main_thread = false;

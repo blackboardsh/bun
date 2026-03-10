@@ -103,6 +103,10 @@ pub fn spawnMaybeSync(
     secondaryArgsValue: ?JSValue,
     comptime is_sync: bool,
 ) bun.JSError!JSValue {
+    if (!globalThis.bunVM().canRun()) {
+        return globalThis.bunVM().throwPermissionDenied(globalThis, "run", "Bun.spawn()");
+    }
+
     if (comptime is_sync) {
         // We skip this on Windows due to test failures.
         if (comptime !Environment.isWindows) {

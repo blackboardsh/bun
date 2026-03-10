@@ -372,6 +372,24 @@ declare module "bun" {
   /**
    * Bun's Web Worker constructor supports some extra options on top of the API browsers have.
    */
+  interface WorkerPermissions {
+    read?: boolean;
+    write?: boolean;
+    env?: boolean;
+    run?: boolean;
+    ffi?: boolean;
+    addons?: boolean;
+    worker?: boolean;
+    /**
+     * Legacy alias for `read: true` and `write: true`.
+     */
+    fs?: boolean;
+    /**
+     * Legacy alias for `run`.
+     */
+    childProcess?: boolean;
+  }
+
   interface WorkerOptions {
     /**
      * A string specifying an identifying name for the DedicatedWorkerGlobalScope representing the scope of
@@ -435,6 +453,13 @@ declare module "bun" {
      * Equivalent to passing the `--preload` CLI argument, but only for this Worker.
      */
     preload?: string[] | string | undefined;
+
+    /**
+     * Capability restrictions applied inside this worker.
+     *
+     * Omitted capabilities inherit from the parent worker or main thread.
+     */
+    permissions?: WorkerPermissions | undefined;
   }
 
   interface Worker extends EventTarget, AbstractWorker {
