@@ -18,9 +18,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-24.04
-            arch: x64
-            label: bun-linux-x64
+          # x64 disabled: takes 2+ hours with -j1 RAM constraints
+          # - runner: ubuntu-24.04
+          #   arch: x64
+          #   label: bun-linux-x64
           - runner: ubuntu-24.04-arm
             arch: arm64
             label: bun-linux-arm64
@@ -469,29 +470,31 @@ jobs:
         run: |
           mkdir -p release-assets
 
-          # Package each platform as a zip matching oven-sh naming convention
+          echo "## Artifact structure:" >> $GITHUB_STEP_SUMMARY
+          find artifacts/ -type f >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
           for dir in artifacts/bun-*/; do
             name=$(basename "$dir")
+            mkdir -p "pkg/$name"
 
-            if [ -f "$dir/bun" ]; then
-              # Unix: create zip with bun binary (+ ICU data if present)
-              mkdir -p "pkg/$name"
-              cp "$dir/bun" "pkg/$name/"
-              if ls "$dir"/icudt*l.dat 1>/dev/null 2>&1; then
-                cp "$dir"/icudt*l.dat "pkg/$name/"
-              fi
+            # Find bun binary anywhere in the artifact directory tree
+            bun_bin=$(find "$dir" -name "bun" -type f ! -name "*.dat" | head -1)
+            bun_exe=$(find "$dir" -name "bun.exe" -type f | head -1)
+            icu_dat=$(find "$dir" -name "icudt*l.dat" -type f | head -1)
+
+            if [ -n "$bun_bin" ]; then
+              cp "$bun_bin" "pkg/$name/bun"
+              [ -n "$icu_dat" ] && cp "$icu_dat" "pkg/$name/"
               (cd pkg && zip -r "../release-assets/${name}.zip" "$name")
-              rm -rf pkg
-            elif [ -f "$dir/bun.exe" ]; then
-              # Windows: create zip with bun.exe (+ ICU data if present)
-              mkdir -p "pkg/$name"
-              cp "$dir/bun.exe" "pkg/$name/"
-              if ls "$dir"/icudt*l.dat 1>/dev/null 2>&1; then
-                cp "$dir"/icudt*l.dat "pkg/$name/"
-              fi
+            elif [ -n "$bun_exe" ]; then
+              cp "$bun_exe" "pkg/$name/bun.exe"
+              [ -n "$icu_dat" ] && cp "$icu_dat" "pkg/$name/"
               (cd pkg && zip -r "../release-assets/${name}.zip" "$name")
-              rm -rf pkg
+            else
+              echo "WARNING: No bun binary found in $dir"
             fi
+            rm -rf pkg
           done
 
           echo "## Release Assets" >> $GITHUB_STEP_SUMMARY
