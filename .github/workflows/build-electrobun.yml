@@ -209,10 +209,12 @@ jobs:
             arch: arm64
             label: bun-darwin-arm64
             llvm_prefix: /opt/homebrew/opt/llvm
-          - runner: macos-15-intel
-            arch: x64
-            label: bun-darwin-x64
-            llvm_prefix: /usr/local/opt/llvm
+          # x64 disabled: highway AVX-512 compile errors with LLVM 22 on macos-15-intel
+          # TODO: fix by pinning LLVM version or patching highway vendor
+          # - runner: macos-15-intel
+          #   arch: x64
+          #   label: bun-darwin-x64
+          #   llvm_prefix: /usr/local/opt/llvm
     steps:
       - uses: actions/checkout@v4
 
@@ -452,30 +454,61 @@ jobs:
             build/release/bun.exe
             build/icudt*l.dat
 
-  summary:
-    name: Size Summary
+  release:
+    name: Create Release
     needs: [linux, macos, windows]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Size comparison
+      - name: Package release assets
         run: |
-          echo "## Bun Binary Sizes (Electrobun)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Platform | Binary | Size |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|--------|------|" >> $GITHUB_STEP_SUMMARY
+          mkdir -p release-assets
+
+          # Package each platform as a zip matching oven-sh naming convention
           for dir in artifacts/bun-*/; do
             name=$(basename "$dir")
+
             if [ -f "$dir/bun" ]; then
-              size=$(ls -lh "$dir/bun" | awk '{print $5}')
-              echo "| $name | bun | $size |" >> $GITHUB_STEP_SUMMARY
+              # Unix: create zip with bun binary (+ ICU data if present)
+              mkdir -p "pkg/$name"
+              cp "$dir/bun" "pkg/$name/"
+              if ls "$dir"/icudt*l.dat 1>/dev/null 2>&1; then
+                cp "$dir"/icudt*l.dat "pkg/$name/"
+              fi
+              (cd pkg && zip -r "../release-assets/${name}.zip" "$name")
+              rm -rf pkg
             elif [ -f "$dir/bun.exe" ]; then
-              size=$(ls -lh "$dir/bun.exe" | awk '{print $5}')
-              echo "| $name | bun.exe | $size |" >> $GITHUB_STEP_SUMMARY
+              # Windows: create zip with bun.exe (+ ICU data if present)
+              mkdir -p "pkg/$name"
+              cp "$dir/bun.exe" "pkg/$name/"
+              if ls "$dir"/icudt*l.dat 1>/dev/null 2>&1; then
+                cp "$dir"/icudt*l.dat "pkg/$name/"
+              fi
+              (cd pkg && zip -r "../release-assets/${name}.zip" "$name")
+              rm -rf pkg
             fi
           done
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Build: Release (full Bun from bun-v1.3.9)" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Release Assets" >> $GITHUB_STEP_SUMMARY
+          ls -lh release-assets/ >> $GITHUB_STEP_SUMMARY
+
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: bunny-bun-${{ steps.sha.outputs.short }}
+          name: Bunny Bun (${{ steps.sha.outputs.short }})
+          body: |
+            Bun fork with worker permissions for Electrobunny.
+            Built from commit ${{ github.sha }}.
+          files: release-assets/*
+          prerelease: true
+          make_latest: true
